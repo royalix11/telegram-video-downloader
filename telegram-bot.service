@@ -1,0 +1,33 @@
+[Unit]
+Description=Asynchronous Multi-Platform Telegram Video Downloader Bot
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/telegram-bot
+EnvironmentFile=/opt/telegram-bot/.env
+ExecStart=/opt/telegram-bot/.venv/bin/python main.py
+
+# Continuous operation & automatic crash recovery
+Restart=always
+RestartSec=5s
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadOnlyPaths=/opt/telegram-bot
+ReadWritePaths=/opt/telegram-bot/temp_downloads /tmp
+
+# Environment & Resource limits
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-bot
+
+[Install]
+WantedBy=multi-user.target

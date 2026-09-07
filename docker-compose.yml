@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram-video-downloader-bot
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TEMP_DIR=/app/temp_downloads
+      - MAX_CONCURRENT_DOWNLOADS=3
+      - MAX_FILE_SIZE_MB=49.5
+    volumes:
+      # Persistent volume for downloads scratch space
+      - ./temp_downloads:/app/temp_downloads
+      # Optional: mount cookies.txt from host if available for private Instagram/TikTok links
+      - ./cookies.txt:/app/cookies.txt:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
