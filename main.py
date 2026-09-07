@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 
 # Ensure UTF-8 console output on Windows
@@ -9,6 +10,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
+
+from aiohttp import web
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -80,9 +83,34 @@ async def main():
     bot_user = await bot.get_me()
     logger.info(f"Bot started successfully as @{bot_user.username} (ID: {bot_user.id})")
 
+    # 4. Start health check web server if PORT is provided (e.g. Render / Cloud PaaS)
+    web_runner = None
+    port_str = os.getenv("PORT")
+    if port_str:
+        try:
+            port = int(port_str)
+            app = web.Application()
+            async def health_check(request):
+                return web.json_response({
+                    "status": "healthy",
+                    "service": "Telegram Video Downloader Bot",
+                    "bot_username": f"@{bot_user.username}"
+                })
+            app.router.add_get("/", health_check)
+            app.router.add_get("/health", health_check)
+            web_runner = web.AppRunner(app)
+            await web_runner.setup()
+            site = web.TCPSite(web_runner, "0.0.0.0", port)
+            await site.start()
+            logger.info(f"Render health check web server active on http://0.0.0.0:{port}")
+        except Exception as e:
+            logger.warning(f"Could not bind health check server to port {port_str}: {e}")
+
     try:
         await dp.start_polling(bot)
     finally:
+        if web_runner:
+            await web_runner.cleanup()
         await bot.session.close()
         logger.info("Bot stopped.")
 
