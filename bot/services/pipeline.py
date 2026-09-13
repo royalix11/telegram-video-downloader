@@ -141,16 +141,21 @@ class MediaPipeline:
         return output_thumb_path
 
     async def remux_to_streamable_mp4(self, input_path: Path, output_path: Path) -> Path:
-        """Ensure stream is in H.264/AAC MP4 container with +faststart."""
+        """Ensure stream is in a fast-streaming MP4 container with +faststart.
+        Prioritizes instant stream-copying (0 re-encoding) whenever possible.
+        """
         output_path.parent.mkdir(parents=True, exist_ok=True)
         info = await self.probe_media(input_path)
 
-        # If already h264 and aac (or no audio), we can fast copy with +faststart
-        can_copy_video = info.video_codec.lower() in ("h264", "avc1")
-        can_copy_audio = info.audio_codec is None or info.audio_codec.lower() in ("aac", "mp4a")
+        vcodec = info.video_codec.lower()
+        acodec = (info.audio_codec or "").lower()
+
+        # Modern mobile Telegram clients support H.264, AVC1, HEVC/H.265, and HVC1 in MP4
+        can_copy_video = vcodec in ("h264", "avc1", "hevc", "h265", "hvc1")
+        can_copy_audio = info.audio_codec is None or acodec in ("aac", "mp4a", "mp3", "opus", "flac")
 
         if can_copy_video and can_copy_audio:
-            logger.info(f"Stream-copying into MP4 with +faststart: {input_path.name}")
+            logger.info(f"Instant stream-copy (0 re-encoding) with +faststart: {input_path.name}")
             cmd = [
                 self.ffmpeg,
                 "-y",
@@ -159,21 +164,33 @@ class MediaPipeline:
                 "-movflags", "+faststart",
                 str(output_path)
             ]
+        elif can_copy_video:
+            logger.info(f"Fast video copy + quick audio AAC remux with +faststart: {input_path.name}")
+            cmd = [
+                self.ffmpeg,
+                "-y",
+                "-i", str(input_path),
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(output_path)
+            ]
         else:
             logger.info(
-                f"Optimized fast transcoding {info.video_codec}/{info.audio_codec} to H.264/AAC (CRF 20, veryfast, 128k): {input_path.name}"
+                f"High-speed transcoding {info.video_codec}/{info.audio_codec} to H.264 (CRF 22, ultrafast): {input_path.name}"
             )
+            audio_args = ["-c:a", "copy"] if can_copy_audio else ["-c:a", "aac", "-b:a", "128k"]
             cmd = [
                 self.ffmpeg,
                 "-y",
                 "-threads", "0",
                 "-i", str(input_path),
                 "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "20",
+                "-preset", "ultrafast",
+                "-crf", "22",
                 "-pix_fmt", "yuv420p",
-                "-c:a", "aac",
-                "-b:a", "128k",
+                *audio_args,
                 "-movflags", "+faststart",
                 str(output_path)
             ]

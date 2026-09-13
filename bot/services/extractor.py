@@ -172,6 +172,7 @@ class ExtractorService:
             "retries": 5,
             "extractor_retries": 5,
             "fragment_retries": 5,
+            "concurrent_fragment_downloads": 4,
             "socket_timeout": 15,
             "windowsfilenames": True,
             "restrictfilenames": True,
