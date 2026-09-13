@@ -38,9 +38,9 @@ RUN mkdir -p /app/temp_downloads \
 # Switch to non-root user
 USER appuser
 
-# Health check ensuring python and bot environment are responsive
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import aiogram, yt_dlp" || exit 1
+# Health check using lightweight curl against the internal health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://127.0.0.1:8080/health || exit 1
 
 # Launch the asynchronous Telegram polling service
 CMD ["python", "main.py"]

@@ -83,9 +83,9 @@ async def main():
     bot_user = await bot.get_me()
     logger.info(f"Bot started successfully as @{bot_user.username} (ID: {bot_user.id})")
 
-    # 4. Start health check web server if PORT is provided (e.g. Render / Cloud PaaS)
+    # 4. Start health check web server (default port 8080 for Docker healthchecks)
     web_runner = None
-    port_str = os.getenv("PORT")
+    port_str = os.getenv("PORT", "8080")
     if port_str:
         try:
             port = int(port_str)
