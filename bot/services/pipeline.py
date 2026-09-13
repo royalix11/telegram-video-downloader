@@ -161,18 +161,19 @@ class MediaPipeline:
             ]
         else:
             logger.info(
-                f"Visually lossless transcoding {info.video_codec}/{info.audio_codec} to H.264/AAC (CRF 18, slow, 192k): {input_path.name}"
+                f"Optimized fast transcoding {info.video_codec}/{info.audio_codec} to H.264/AAC (CRF 20, veryfast, 128k): {input_path.name}"
             )
             cmd = [
                 self.ffmpeg,
                 "-y",
+                "-threads", "0",
                 "-i", str(input_path),
                 "-c:v", "libx264",
-                "-preset", "slow",
-                "-crf", "18",
+                "-preset", "veryfast",
+                "-crf", "20",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac",
-                "-b:a", "192k",
+                "-b:a", "128k",
                 "-movflags", "+faststart",
                 str(output_path)
             ]
@@ -240,12 +241,13 @@ class MediaPipeline:
             cmd_pass1 = [
                 self.ffmpeg,
                 "-y",
+                "-threads", "0",
                 "-i", str(input_path),
                 "-c:v", "libx264",
                 "-b:v", f"{vbitrate_k}k",
                 "-pass", "1",
                 "-passlogfile", passlog_prefix,
-                "-preset", "fast",
+                "-preset", "veryfast",
                 "-an",
                 "-f", "null",
                 self.null_device
@@ -263,12 +265,13 @@ class MediaPipeline:
             cmd_pass2 = [
                 self.ffmpeg,
                 "-y",
+                "-threads", "0",
                 "-i", str(input_path),
                 "-c:v", "libx264",
                 "-b:v", f"{vbitrate_k}k",
                 "-pass", "2",
                 "-passlogfile", passlog_prefix,
-                "-preset", "fast",
+                "-preset", "veryfast",
                 "-c:a", "aac",
                 "-b:a", f"{abitrate_k}k",
                 "-pix_fmt", "yuv420p",
