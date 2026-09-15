@@ -296,6 +296,32 @@ class ExtractorService:
                     tier=tier
                 )
 
+                loop = asyncio.get_running_loop()
+
+                def _progress_hook(d):
+                    if d.get("status") == "downloading" and status_cb:
+                        total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                        downloaded = d.get("downloaded_bytes") or 0
+                        if total > 0:
+                            ratio = min(1.0, downloaded / total)
+                            pct = int(15 + ratio * 60)
+                        elif downloaded > 0:
+                            pct = min(72, int(15 + (downloaded / (15 * 1024 * 1024)) * 55))
+                        else:
+                            pct = 20
+
+                        try:
+                            if asyncio.iscoroutinefunction(status_cb):
+                                asyncio.run_coroutine_threadsafe(status_cb(pct), loop)
+                            else:
+                                res = status_cb(pct)
+                                if asyncio.iscoroutine(res):
+                                    asyncio.run_coroutine_threadsafe(res, loop)
+                        except Exception:
+                            pass
+
+                opts["progress_hooks"] = [_progress_hook]
+
                 def _download():
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         info_dict = ydl.extract_info(canonical_url, download=False)

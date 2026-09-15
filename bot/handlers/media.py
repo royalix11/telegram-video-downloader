@@ -18,7 +18,7 @@ from bot.services.extractor import (
 )
 from bot.services.orchestrator import MediaOrchestrator, ProcessedMedia
 from bot.services.pipeline import PipelineError, VideoTooLongError
-from bot.utils.formatters import format_bytes, format_duration
+from bot.utils.formatters import format_bytes, format_duration, format_progress
 from bot.utils.link_detector import (
     detect_platform,
     extract_all_links,
@@ -35,6 +35,51 @@ orchestrator = MediaOrchestrator()
 concurrency_semaphore = asyncio.Semaphore(settings.max_concurrent_downloads)
 
 
+class ProgressTracker:
+    """Manages rate-limited Telegram message edits displaying a clean 1..100 progress counter."""
+
+    def __init__(self, message: Message, initial_pct: int = 1):
+        self.message = message
+        self.current_pct = initial_pct
+        self.last_edit_time = 0.0
+        self.min_interval = 0.8  # minimum seconds between edits to protect against Telegram flood limits
+        self._lock = asyncio.Lock()
+        self._last_rendered_text = ""
+
+    async def update(self, val: int | float | str, force: bool = False):
+        # Ignore technical status strings completely
+        if isinstance(val, str):
+            try:
+                target_pct = int(val)
+            except ValueError:
+                return
+        else:
+            target_pct = int(val)
+
+        target_pct = max(1, min(100, target_pct))
+        if target_pct <= self.current_pct and not force:
+            return
+
+        self.current_pct = target_pct
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+
+        if not force and (now - self.last_edit_time < self.min_interval):
+            return
+
+        text = format_progress(self.current_pct)
+        if text == self._last_rendered_text:
+            return
+
+        async with self._lock:
+            try:
+                await self.message.edit_text(text, parse_mode="HTML")
+                self.last_edit_time = now
+                self._last_rendered_text = text
+            except Exception as e:
+                logger.debug(f"Progress edit suppressed: {e}")
+
+
 @router.message()
 async def handle_media_message(message: Message, bot: Bot):
     """Intercept incoming messages containing supported social media links or provide clear guidance."""
@@ -44,28 +89,17 @@ async def handle_media_message(message: Message, bot: Bot):
     # Extract all URLs using both Telegram entities and regex
     candidate_links = extract_all_links(text, entities)
 
-    # If message contains no URLs at all, prompt the user
-    if not candidate_links:
-        await message.reply(
-            "💡 <b>Send me a video link!</b>\n\n"
-            "Paste a link from <b>Instagram, TikTok, YouTube Shorts, X / Twitter, Reddit, or Facebook</b> "
-            "and I will download and send it to you.",
-            parse_mode="HTML"
-        )
-        return
-
     # Filter to supported platforms
     supported_links = [link for link in candidate_links if is_supported_url(link)]
 
-    # If URLs were found but none match supported platforms, inform user gracefully
     if not supported_links:
+        if text.startswith("/"):
+            return
         await message.reply(
-            "⚠️ <b>Unsupported Link:</b>\n"
-            "This link does not appear to be from a supported platform.\n\n"
-            "<b>Supported services:</b>\n"
-            "• 📸 <b>Instagram</b> (Reels, Posts, Stories)\n"
-            "• 🎵 <b>TikTok</b> (vm, vt, /t/, standard links)\n"
-            "• 🔴 <b>YouTube</b> (Shorts, Clips, Videos)\n"
+            "👋 <b>Supported Video Platforms:</b>\n\n"
+            "• 📸 <b>Instagram</b> (Reels, Posts & Stories)\n"
+            "• 🎵 <b>TikTok</b> (Videos & Audio)\n"
+            "• 🔴 <b>YouTube</b> (Shorts & Standard Videos)\n"
             "• 🐦 <b>X / Twitter</b> (Clips & Posts)\n"
             "• 🤖 <b>Reddit</b> (Posts & v.redd.it)\n"
             "• 📘 <b>Facebook</b> (Reels & Watch)\n\n"
@@ -81,33 +115,30 @@ async def handle_media_message(message: Message, bot: Bot):
 
     logger.info(f"Processing incoming link [{platform_name}]: {target_url} from user {message.from_user.id if message.from_user else 'unknown'}")
 
+    # Initial 1% progress message
     status_msg = await message.reply(
-        f"⏳ <b>Queued:</b> Preparing {platform_name} download...",
+        format_progress(1),
         parse_mode="HTML"
     )
 
-    last_text = ""
+    tracker = ProgressTracker(status_msg, initial_pct=1)
 
-    async def update_status(new_text: str):
-        nonlocal last_text
-        if new_text != last_text:
-            try:
-                await status_msg.edit_text(new_text, parse_mode="HTML")
-                last_text = new_text
-            except Exception as e:
-                logger.debug(f"Could not update status message: {e}")
+    async def update_status_text(err_text: str):
+        try:
+            await status_msg.edit_text(err_text, parse_mode="HTML")
+        except Exception as e:
+            logger.debug(f"Could not display error message: {e}")
 
     try:
         async with concurrency_semaphore:
+            await tracker.update(10)
             async with orchestrator.process_job(
                 url=target_url,
                 platform_name=platform_name,
-                progress_cb=update_status
+                progress_cb=tracker.update
             ) as media:
-                await update_status(
-                    f"⬆️ <b>Uploading {platform_name} video to Telegram...</b>\n"
-                    f"<i>Size: {format_bytes(media.final_size_bytes)}</i>"
-                )
+                # Video processing complete, preparing payload
+                await tracker.update(92, force=True)
 
                 # Format caption
                 caption_title = html.escape(media.title[:120])
@@ -130,19 +161,38 @@ async def handle_media_message(message: Message, bot: Bot):
                 video_input = FSInputFile(str(media.video_path))
                 thumb_input = FSInputFile(str(media.thumbnail_path)) if media.thumbnail_path else None
 
-                await bot.send_video(
-                    chat_id=message.chat.id,
-                    video=video_input,
-                    duration=int(media.media_info.duration),
-                    width=media.media_info.width,
-                    height=media.media_info.height,
-                    thumbnail=thumb_input,
-                    caption=caption_text,
-                    parse_mode="HTML",
-                    supports_streaming=True,
-                    reply_to_message_id=message.message_id,
-                    request_timeout=300
-                )
+                # Background ticker advancing 93..99 while payload is transmitting over network
+                ticker_active = True
+
+                async def upload_ticker():
+                    p = 92
+                    while ticker_active and p < 99:
+                        await asyncio.sleep(1.2)
+                        p += 2
+                        await tracker.update(min(99, p))
+
+                ticker_task = asyncio.create_task(upload_ticker())
+                try:
+                    await bot.send_video(
+                        chat_id=message.chat.id,
+                        video=video_input,
+                        duration=int(media.media_info.duration),
+                        width=media.media_info.width,
+                        height=media.media_info.height,
+                        thumbnail=thumb_input,
+                        caption=caption_text,
+                        parse_mode="HTML",
+                        supports_streaming=True,
+                        reply_to_message_id=message.message_id,
+                        request_timeout=300
+                    )
+                finally:
+                    ticker_active = False
+                    ticker_task.cancel()
+
+                # 100% complete!
+                await tracker.update(100, force=True)
+                await asyncio.sleep(1.2)
 
         # Delete status message on success
         try:
@@ -152,35 +202,35 @@ async def handle_media_message(message: Message, bot: Bot):
 
     except LoginRequiredError:
         logger.warning(f"Login required for link: {target_url}")
-        await update_status(
+        await update_status_text(
             f"🔒 <b>Authentication Required:</b> This {platform_name} post is private or login-restricted. "
             "A valid <code>cookies.txt</code> session is required to extract this media."
         )
     except VideoUnavailableError:
         logger.warning(f"Video unavailable: {target_url}")
-        await update_status(
+        await update_status_text(
             f"❌ <b>Unavailable:</b> The {platform_name} video could not be found, has expired, "
             "or is geo-restricted."
         )
     except VideoTooLongError as e:
         logger.warning(f"Video too long: {e}")
-        await update_status(
+        await update_status_text(
             f"⚠️ <b>Video Too Long:</b> {html.escape(str(e))}"
         )
     except PipelineError as e:
         logger.error(f"Pipeline error processing {target_url}:\n{traceback.format_exc()}")
-        await update_status(
+        await update_status_text(
             f"⚠️ <b>Processing Error:</b> Failed to process video ({html.escape(str(e))})."
         )
     except TelegramNetworkError as e:
         logger.error(f"Telegram upload timeout / network error processing {target_url}:\n{traceback.format_exc()}")
-        await update_status(
+        await update_status_text(
             f"⚠️ <b>Upload Network Timeout:</b> Video was downloaded and transcoded successfully, "
             "but sending the file payload to Telegram timed out. Please retry."
         )
     except Exception as e:
         logger.error(f"Unexpected error processing {target_url}:\n{traceback.format_exc()}")
-        await update_status(
+        await update_status_text(
             f"❌ <b>Download Failed:</b> Could not process this {platform_name} video.\n"
             f"<i>Reason: {html.escape(str(e)[:150])}</i>"
         )

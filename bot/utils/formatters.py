@@ -46,3 +46,15 @@ def sanitize_filename(filename: str, max_length: int = 100) -> str:
     if not cleaned:
         cleaned = "download"
     return cleaned[:max_length]
+
+
+def format_progress(pct: int | float) -> str:
+    """Format an integer percentage 1..100 into a clean progress bar."""
+    val = max(1, min(100, int(pct)))
+    filled = val // 10
+    empty = 10 - filled
+    bar = "█" * filled + "░" * empty
+    if val >= 100:
+        return f"✅ <b>100%</b>  <code>[{bar}]</code>"
+    return f"⏳ <b>{val}%</b>  <code>[{bar}]</code>"
+

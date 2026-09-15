@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from bot.services.doctor import EnvironmentDoctor
 from bot.services.pipeline import MediaPipeline, MediaInfo
-from bot.utils.formatters import format_bytes, format_duration, sanitize_filename
+from bot.utils.formatters import format_bytes, format_duration, sanitize_filename, format_progress
 from bot.utils.link_detector import (
     detect_platform,
     extract_links,
@@ -110,7 +110,15 @@ def test_formatters():
     clean = sanitize_filename(raw)
     assert ":" not in clean and "<" not in clean and '"' not in clean and "*" not in clean
 
-    log_test("Formatting Utilities", True, f"Cleaned filename: '{clean}'")
+    # Progress bar tests
+    p1 = format_progress(1)
+    p50 = format_progress(50)
+    p100 = format_progress(100)
+    assert "1%" in p1 and "░░░░░░░░░░" in p1
+    assert "50%" in p50 and "█████░░░░░" in p50
+    assert "100%" in p100 and "██████████" in p100 and "✅" in p100
+
+    log_test("Formatting Utilities", True, f"Cleaned filename: '{clean}', progress format verified")
 
 
 async def generate_synthetic_video(output_file: Path, duration: int = 3, bitrate: str = "2000k"):

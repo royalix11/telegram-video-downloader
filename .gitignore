@@ -8,3 +8,4 @@ __pycache__/
 cookies.txt
 .env
 temp_downloads/
+*.mp4

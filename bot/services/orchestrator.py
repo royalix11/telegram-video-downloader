@@ -47,10 +47,10 @@ class MediaOrchestrator:
         progress_cb: Optional[Callable[[str], asyncio.Future | None]] = None
     ) -> AsyncIterator[ProcessedMedia]:
         """Safely execute the full download and transcode workflow in an isolated temp directory."""
-        async def notify(text: str):
+        async def notify(val: int | float | str):
             if progress_cb:
                 try:
-                    res = progress_cb(text)
+                    res = progress_cb(val)
                     if asyncio.iscoroutine(res):
                         await res
                 except Exception as e:
@@ -61,7 +61,7 @@ class MediaOrchestrator:
             work_dir = Path(tmp_dir_str)
             logger.info(f"Initialized job directory: {work_dir}")
 
-            await notify("🔍 <b>Querying media stream and metadata...</b>")
+            await notify(10)
 
             # 1. Download media stream via yt-dlp with backoff retries
             download_info = await self.extractor.download_media(url, work_dir, status_cb=notify)
@@ -82,7 +82,7 @@ class MediaOrchestrator:
             logger.info(f"Downloaded media: {downloaded_file.name} ({format_bytes(orig_size)})")
 
             # 2. Probe initial media characteristics
-            await notify("⚙️ <b>Inspecting media stream attributes...</b>")
+            await notify(76)
             info = await self.pipeline.probe_media(downloaded_file)
             logger.info(
                 f"[Initial Probe] {clean_title} | Resolution: {info.width}x{info.height} | "
@@ -93,7 +93,7 @@ class MediaOrchestrator:
             was_compressed = False
 
             # 3. Visually Lossless Transcoding / FastStart Container Optimization
-            await notify("⚙️ <b>Optimizing container for maximum quality playback (+faststart)...</b>")
+            await notify(82)
             streamable_file = work_dir / f"{clean_title}_streamable.mp4"
             try:
                 await self.pipeline.remux_to_streamable_mp4(downloaded_file, streamable_file)
@@ -106,10 +106,7 @@ class MediaOrchestrator:
             # 4. Enforce Telegram 49.5 MB limit only if final file is oversize
             final_size = final_video_path.stat().st_size
             if final_size > settings.max_file_size_bytes:
-                await notify(
-                    f"📦 <b>File size ({format_bytes(final_size)}) exceeds Telegram 50 MB limit.</b>\n"
-                    f"<i>Applying 2-pass compression to fit within Telegram...</i>"
-                )
+                await notify(86)
                 compressed_file = work_dir / f"{clean_title}_compressed.mp4"
                 await self.pipeline.compress_video(
                     input_path=final_video_path,
@@ -123,6 +120,7 @@ class MediaOrchestrator:
                 final_size = final_video_path.stat().st_size
 
             # 5. Extract thumbnail for instant player preview
+            await notify(90)
             thumb_path = work_dir / "thumb.jpg"
             thumb_ts = min(1.0, info.duration / 2.0) if info.duration > 0 else 0.5
             try:
