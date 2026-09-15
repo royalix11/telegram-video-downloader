@@ -42,7 +42,7 @@ class MediaPipeline:
         self.ffprobe = shutil.which(ffprobe_bin) or ffprobe_bin
         self.null_device = "NUL" if sys.platform == "win32" else "/dev/null"
 
-    async def probe_media(self, file_path: Path) -> MediaInfo:
+    async def probe_media(self, file_path: Path, allow_audio_only: bool = False) -> MediaInfo:
         """Probe media file via ffprobe and return parsed MediaInfo."""
         if not file_path.is_file():
             raise FileNotFoundError(f"Media file not found: {file_path}")
@@ -74,7 +74,25 @@ class MediaPipeline:
         audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
 
         if not video_stream:
-            raise PipelineError("No video stream detected in probed media.")
+            if not allow_audio_only:
+                raise PipelineError("No video stream detected in probed media.")
+            # Audio-only container (e.g. TikTok / IG photo post soundtrack)
+            duration = float(
+                fmt.get("duration")
+                or (audio_stream.get("duration") if audio_stream else 0.0)
+                or 0.0
+            )
+            file_size = int(fmt.get("size") or file_path.stat().st_size)
+            bit_rate = int(fmt.get("bit_rate") or 0) if fmt.get("bit_rate") else None
+            return MediaInfo(
+                duration=duration,
+                width=0,
+                height=0,
+                video_codec="",
+                audio_codec=audio_stream.get("codec_name") if audio_stream else None,
+                bit_rate=bit_rate,
+                file_size_bytes=file_size,
+            )
 
         duration = float(fmt.get("duration") or video_stream.get("duration") or 0.0)
         width = int(video_stream.get("width") or 0)
@@ -94,6 +112,41 @@ class MediaPipeline:
             bit_rate=bit_rate,
             file_size_bytes=file_size,
         )
+
+    async def synthesize_video_from_photo(
+        self,
+        photo_path: Path,
+        audio_path: Path,
+        output_path: Path
+    ) -> Path:
+        """Combine a photo and audio stream into a streamable H.264/AAC MP4 video with +faststart."""
+        cmd = [
+            self.ffmpeg,
+            "-y",
+            "-loop", "1",
+            "-i", str(photo_path),
+            "-i", str(audio_path),
+            "-c:v", "libx264",
+            "-tune", "stillimage",
+            "-preset", "veryfast",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-pix_fmt", "yuv420p",
+            "-shortest",
+            "-movflags", "+faststart",
+            str(output_path)
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            err = stderr.decode("utf-8", errors="replace")
+            raise PipelineError(f"Failed to synthesize video from photo: {err}")
+        return output_path
+
 
     async def extract_thumbnail(
         self,

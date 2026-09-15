@@ -75,9 +75,10 @@ def clean_url(raw_url: str) -> str:
                 return urlunparse((parsed.scheme, parsed.netloc, path, "", f"v={query_dict['v'][0]}", ""))
             return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
 
-        # TikTok specific URL cleaning: strip dynamic share tracking params
+        # TikTok specific URL cleaning: strip dynamic share tracking params and normalize /photo/ to /video/
         if "tiktok.com" in netloc or "douyin.com" in netloc:
-            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+            clean_path = re.sub(r"/photo/(\d+)", r"/video/\1", parsed.path)
+            return urlunparse((parsed.scheme, parsed.netloc, clean_path, "", "", ""))
 
         # Parse query parameters and remove tracking tokens for other platforms
         query_dict = parse_qs(parsed.query, keep_blank_values=True)

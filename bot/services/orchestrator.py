@@ -8,12 +8,35 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Callable, Optional
 
+import aiohttp
+
 from bot.config import settings
 from bot.services.extractor import ExtractorService
 from bot.services.pipeline import MediaInfo, MediaPipeline, PipelineError
 from bot.utils.formatters import format_bytes, sanitize_filename
 
 logger = logging.getLogger(__name__)
+
+
+async def _download_photo_asset(photo_url: str, dest: Path) -> bool:
+    """Download a remote photo asset to local destination for video synthesis."""
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        }
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(photo_url) as resp:
+                if resp.status == 200:
+                    dest.write_bytes(await resp.read())
+                    return True
+    except Exception as e:
+        logger.warning(f"Could not download photo asset from {photo_url}: {e}")
+    return False
 
 
 @dataclass
@@ -83,7 +106,40 @@ class MediaOrchestrator:
 
             # 2. Probe initial media characteristics
             await notify(76)
-            info = await self.pipeline.probe_media(downloaded_file)
+            info = await self.pipeline.probe_media(downloaded_file, allow_audio_only=True)
+            thumb_path = None
+
+            # If media is audio-only (e.g. TikTok / Instagram photo mode / slideshow)
+            if not info.video_codec:
+                logger.info(f"Audio-only media detected for '{clean_title}'. Looking for photomode assets...")
+                photo_url = download_info.get("thumbnail")
+                if not photo_url and download_info.get("thumbnails"):
+                    thumbs = download_info.get("thumbnails")
+                    if isinstance(thumbs, list) and thumbs:
+                        photo_url = thumbs[-1].get("url")
+
+                if photo_url:
+                    photo_file = work_dir / "photo.jpg"
+                    downloaded_photo = await _download_photo_asset(photo_url, photo_file)
+                    if downloaded_photo and photo_file.is_file():
+                        await notify(80)
+                        synthesized_file = work_dir / f"{clean_title}_photovideo.mp4"
+                        try:
+                            await self.pipeline.synthesize_video_from_photo(
+                                photo_path=photo_file,
+                                audio_path=downloaded_file,
+                                output_path=synthesized_file
+                            )
+                            downloaded_file = synthesized_file
+                            thumb_path = photo_file
+                            info = await self.pipeline.probe_media(downloaded_file)
+                            logger.info(f"Synthesized photo video: {info.width}x{info.height}, {info.duration:.1f}s")
+                        except Exception as e:
+                            logger.warning(f"Failed to synthesize photo video: {e}")
+
+                if not info.video_codec:
+                    raise PipelineError("No video stream found and could not construct video from photo post.")
+
             logger.info(
                 f"[Initial Probe] {clean_title} | Resolution: {info.width}x{info.height} | "
                 f"Codec: {info.video_codec}/{info.audio_codec} | Duration: {info.duration:.1f}s | Size: {format_bytes(orig_size)}"
@@ -119,15 +175,17 @@ class MediaOrchestrator:
                 info = await self.pipeline.probe_media(final_video_path)
                 final_size = final_video_path.stat().st_size
 
-            # 5. Extract thumbnail for instant player preview
+            # 5. Extract thumbnail for instant player preview (if not already set from photo)
             await notify(90)
-            thumb_path = work_dir / "thumb.jpg"
-            thumb_ts = min(1.0, info.duration / 2.0) if info.duration > 0 else 0.5
-            try:
-                await self.pipeline.extract_thumbnail(final_video_path, thumb_path, timestamp=thumb_ts)
-            except Exception as e:
-                logger.warning(f"Could not generate thumbnail: {e}")
-                thumb_path = None
+            if not thumb_path or not thumb_path.is_file():
+                thumb_path = work_dir / "thumb.jpg"
+                thumb_ts = min(1.0, info.duration / 2.0) if info.duration > 0 else 0.5
+                try:
+                    await self.pipeline.extract_thumbnail(final_video_path, thumb_path, timestamp=thumb_ts)
+                except Exception as e:
+                    logger.warning(f"Could not generate thumbnail: {e}")
+                    thumb_path = None
+
 
             logger.info(
                 f"[Final Media] {clean_title} | Resolution: {info.width}x{info.height} | "

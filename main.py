@@ -21,10 +21,31 @@ from bot.config import settings
 from bot.handlers import base, media
 from bot.services.doctor import EnvironmentDoctor
 
+from collections import deque
+
+class MemoryLogHandler(logging.Handler):
+    """In-memory circular ring buffer for real-time log inspection and remote monitoring."""
+
+    def __init__(self, maxlen: int = 1000):
+        super().__init__()
+        self.buffer = deque(maxlen=maxlen)
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            self.buffer.append(msg)
+        except Exception:
+            pass
+
+
+log_buffer = MemoryLogHandler()
+log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+log_buffer.setFormatter(log_formatter)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler(sys.stdout), log_buffer]
 )
 logger = logging.getLogger("main")
 
@@ -90,15 +111,43 @@ async def main():
         try:
             port = int(port_str)
             app = web.Application()
+
             async def health_check(request):
                 return web.json_response({
                     "status": "healthy",
                     "service": "Telegram Video Downloader Bot",
-                    "bot_username": f"@{bot_user.username}"
+                    "bot_username": f"@{bot_user.username}",
+                    "buffered_logs_count": len(log_buffer.buffer)
                 })
+
+            async def get_logs(request):
+                limit_str = request.query.get("limit", "200")
+                try:
+                    limit = min(1000, max(1, int(limit_str)))
+                except ValueError:
+                    limit = 200
+                level = request.query.get("level", "").upper()
+                lines = list(log_buffer.buffer)
+                if level:
+                    lines = [line for line in lines if f"[{level}]" in line]
+                return web.Response(text="\n".join(lines[-limit:]), content_type="text/plain; charset=utf-8")
+
+            async def get_errors(request):
+                lines = [
+                    line for line in log_buffer.buffer
+                    if "[ERROR]" in line or "[WARNING]" in line
+                ]
+                return web.Response(
+                    text="\n".join(lines[-200:]) if lines else "No errors logged.",
+                    content_type="text/plain; charset=utf-8"
+                )
+
             app.router.add_get("/", health_check)
             app.router.add_get("/health", health_check)
+            app.router.add_get("/logs", get_logs)
+            app.router.add_get("/logs/errors", get_errors)
             web_runner = web.AppRunner(app)
+
             await web_runner.setup()
             site = web.TCPSite(web_runner, "0.0.0.0", port)
             await site.start()

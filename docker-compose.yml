@@ -12,6 +12,8 @@ services:
       - TEMP_DIR=/app/temp_downloads
       - MAX_CONCURRENT_DOWNLOADS=3
       - MAX_FILE_SIZE_MB=49.5
+    ports:
+      - "8080:8080"
     volumes:
       # Persistent volume for downloads scratch space
       - ./temp_downloads:/app/temp_downloads

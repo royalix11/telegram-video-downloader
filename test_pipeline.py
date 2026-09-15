@@ -30,6 +30,7 @@ from bot.services.doctor import EnvironmentDoctor
 from bot.services.pipeline import MediaPipeline, MediaInfo
 from bot.utils.formatters import format_bytes, format_duration, sanitize_filename, format_progress
 from bot.utils.link_detector import (
+    clean_url,
     detect_platform,
     extract_links,
     is_supported_url,
@@ -235,6 +236,50 @@ def test_temp_cleanup():
     log_test("Resource Garbage Collection", True, "Zero disk leaks verified")
 
 
+async def test_photomode_synthesis():
+    print("\n--- 7. Testing Photomode URL Cleaning & Video Synthesis ---")
+    # 1. URL Normalization check
+    raw_photo_url = "https://www.tiktok.com/@traquew/photo/7680944229220207875?_r=1"
+    cleaned = clean_url(raw_photo_url)
+    assert "/video/7680944229220207875" in cleaned, f"Expected /video/ rewrite, got {cleaned}"
+    log_test("TikTok Photomode URL Normalization", True, f"Cleaned: {cleaned}")
+
+    # 2. Synthesis of static image + audio stream
+    pipeline = MediaPipeline()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        test_video = tmp_path / "test_raw.mp4"
+        test_thumb = tmp_path / "test_thumb.jpg"
+        test_audio = tmp_path / "test_audio.m4a"
+        out_synth = tmp_path / "synthesized.mp4"
+
+        # Generate base synthetic media
+        await generate_synthetic_video(test_video, duration=2, bitrate="1000k")
+        await pipeline.extract_thumbnail(test_video, test_thumb, timestamp=0.5)
+
+        # Extract audio stream from test video
+        ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+        cmd = [ffmpeg_bin, "-y", "-i", str(test_video), "-vn", "-c:a", "copy", str(test_audio)]
+        proc = await asyncio.create_subprocess_exec(*cmd)
+        await proc.communicate()
+
+        # Test audio-only probe
+        audio_info = await pipeline.probe_media(test_audio, allow_audio_only=True)
+        assert audio_info.video_codec == "", f"Expected empty video codec, got {audio_info.video_codec}"
+        assert audio_info.audio_codec in ("aac", "mp4a")
+
+        # Synthesize video
+        await pipeline.synthesize_video_from_photo(test_thumb, test_audio, out_synth)
+        assert out_synth.is_file() and out_synth.stat().st_size > 0
+
+        # Probe synthesized video
+        synth_info = await pipeline.probe_media(out_synth)
+        assert synth_info.video_codec in ("h264", "avc1")
+        assert synth_info.audio_codec in ("aac", "mp4a")
+        assert synth_info.duration > 1.5
+        log_test("Photomode Video Synthesis", True, f"Created {synth_info.width}x{synth_info.height} video ({synth_info.duration:.1f}s)")
+
+
 async def main():
     print("=" * 70)
     print("🚀 Running Headless Telegram Bot Pipeline Verification Suite")
@@ -246,10 +291,12 @@ async def main():
     await test_ffmpeg_probe_and_remux()
     await test_compression_pipeline()
     test_temp_cleanup()
+    await test_photomode_synthesis()
 
     print("\n" + "=" * 70)
-    print("🎉 ALL 6 TEST SUITES PASSED CLEANLY WITH ZERO ERRORS!")
+    print("🎉 ALL 7 TEST SUITES PASSED CLEANLY WITH ZERO ERRORS!")
     print("=" * 70)
+
 
 
 if __name__ == "__main__":
